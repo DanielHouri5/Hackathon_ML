@@ -1,0 +1,14 @@
+# Data
+data/*.csv
+data/*.zip
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# Outputs
+outputs/*.png
+outputs/*.pkl
