@@ -217,32 +217,6 @@ def predict_with_baseline_model(
     return results[model_name]['model'].predict(X)
 
 
-# Convert baseline model results to a DataFrame for easy viewing
-def get_baseline_results_dataframe(results: Dict[str, Dict[str, Any]]) -> pd.DataFrame:
-    """
-    Convert baseline results to DataFrame
-    
-    Parameters:
-    -----------
-    results : Dict[str, Dict[str, Any]]
-        Results from train_all_baseline_models
-        
-    Returns:
-    --------
-    pd.DataFrame : Results table
-    """
-    data = []
-    for name, res in results.items():
-        data.append({
-            'Model': name,
-            'Mean CV Score': res['cv_mean'],
-            'Std CV Score': res['cv_std']
-        })
-    
-    df = pd.DataFrame(data)
-    return df.sort_values('Mean CV Score', ascending=False).reset_index(drop=True)
-
-
 # ============================================================================
 # BOOSTING MODELS - The Iron Trinity (XGBoost, LightGBM, CatBoost)
 # ============================================================================
@@ -485,32 +459,6 @@ def predict_with_boosting_model(
     return results[model_name]['model'].predict(X)
 
 
-# Convert boosting model results to a DataFrame for comparison
-def get_boosting_results_dataframe(results: Dict[str, Dict[str, Any]]) -> pd.DataFrame:
-    """
-    Convert boosting results to DataFrame
-    
-    Parameters:
-    -----------
-    results : Dict[str, Dict[str, Any]]
-        Results from train_all_boosting_models
-        
-    Returns:
-    --------
-    pd.DataFrame : Results table
-    """
-    data = []
-    for name, res in results.items():
-        data.append({
-            'Model': name,
-            'Mean CV Score': res['cv_mean'],
-            'Std CV Score': res['cv_std']
-        })
-    
-    df = pd.DataFrame(data)
-    return df.sort_values('Mean CV Score', ascending=False).reset_index(drop=True)
-
-
 # Extract and rank feature importance from a boosting model
 def get_feature_importance(
     results: Dict[str, Dict[str, Any]],
@@ -689,6 +637,152 @@ def predict_with_stacking(
     np.ndarray : Predictions
     """
     return stacking_result['model'].predict(X)
+
+
+# Create and train a Blending Ensemble (Holdout-based ensemble)
+def train_blending_ensemble(
+    base_models: List[Tuple[str, Any]],
+    X_train: pd.DataFrame,
+    y_train: pd.Series,
+    X_val: pd.DataFrame,
+    y_val: pd.Series,
+    meta_model: Optional[Any] = None,
+    random_state: int = 42,
+    verbose: bool = True
+) -> Dict[str, Any]:
+    """
+    Train a Blending Ensemble (holdout-based approach)
+    
+    Blending vs Stacking:
+    - Blending: Uses holdout validation set for meta-model training (faster, simpler)
+    - Stacking: Uses cross-validation for meta-model training (more robust, slower)
+    
+    Parameters:
+    -----------
+    base_models : List[Tuple[str, Any]]
+        List of base models [(name, model), ...]
+    X_train : pd.DataFrame
+        Training features for base models
+    y_train : pd.Series
+        Training labels for base models
+    X_val : pd.DataFrame
+        Validation features for meta-model training
+    y_val : pd.Series
+        Validation labels for meta-model training
+    meta_model : Any, optional
+        Meta-learner (default: Logistic Regression)
+    random_state : int
+        Random seed
+    verbose : bool
+        Whether to print messages
+        
+    Returns:
+    --------
+    Dict[str, Any] : Dictionary containing trained models and meta-features
+    """
+    if verbose:
+        print("🔀 Training Blending Ensemble...")
+        print(f"   Base Models: {[name for name, _ in base_models]}")
+        print(f"   Meta Model: {type(meta_model).__name__ if meta_model else 'LogisticRegression'}")
+        print(f"   Train size: {len(X_train)}, Validation size: {len(X_val)}\n")
+    
+    # Default meta-model: Logistic Regression
+    if meta_model is None:
+        meta_model = LogisticRegression(
+            random_state=random_state,
+            max_iter=1000
+        )
+    
+    # Step 1: Train base models on training set
+    trained_base_models = []
+    meta_features_val = []
+    
+    for name, model in base_models:
+        if verbose:
+            print(f"   🔹 Training {name} on training set...")
+        
+        # Train on training set
+        model.fit(X_train, y_train)
+        trained_base_models.append((name, model))
+        
+        # Predict on validation set to create meta-features
+        if hasattr(model, 'predict_proba'):
+            pred = model.predict_proba(X_val)
+        else:
+            pred = model.predict(X_val).reshape(-1, 1)
+        
+        meta_features_val.append(pred)
+    
+    # Step 2: Create meta-features for validation set
+    if hasattr(trained_base_models[0][1], 'predict_proba'):
+        # For probability predictions, stack all predictions
+        meta_X_val = np.hstack(meta_features_val)
+    else:
+        # For simple predictions, stack as columns
+        meta_X_val = np.column_stack(meta_features_val)
+    
+    # Step 3: Train meta-model on validation meta-features
+    if verbose:
+        print(f"\n   🎯 Training meta-model on validation predictions...")
+    
+    meta_model.fit(meta_X_val, y_val)
+    
+    # Evaluate on validation set
+    from sklearn.metrics import accuracy_score
+    meta_pred = meta_model.predict(meta_X_val)
+    val_accuracy = accuracy_score(y_val, meta_pred)
+    
+    if verbose:
+        print(f"\n✅ Blending completed!")
+        print(f"📊 Validation Accuracy: {val_accuracy:.4f}\n")
+    
+    return {
+        'base_models': trained_base_models,
+        'meta_model': meta_model,
+        'val_accuracy': val_accuracy,
+        'meta_features_shape': meta_X_val.shape
+    }
+
+
+# Make predictions with Blending Ensemble
+def predict_with_blending(
+    blending_result: Dict[str, Any],
+    X: pd.DataFrame
+) -> np.ndarray:
+    """
+    Make predictions with Blending Ensemble
+    
+    Parameters:
+    -----------
+    blending_result : Dict[str, Any]
+        Result from train_blending_ensemble
+    X : pd.DataFrame
+        Data for prediction
+        
+    Returns:
+    --------
+    np.ndarray : Predictions
+    """
+    base_models = blending_result['base_models']
+    meta_model = blending_result['meta_model']
+    
+    # Step 1: Get predictions from base models
+    meta_features = []
+    for name, model in base_models:
+        if hasattr(model, 'predict_proba'):
+            pred = model.predict_proba(X)
+        else:
+            pred = model.predict(X).reshape(-1, 1)
+        meta_features.append(pred)
+    
+    # Step 2: Stack meta-features
+    if hasattr(base_models[0][1], 'predict_proba'):
+        meta_X = np.hstack(meta_features)
+    else:
+        meta_X = np.column_stack(meta_features)
+    
+    # Step 3: Predict with meta-model
+    return meta_model.predict(meta_X)
 
 
 # Create a weighted average ensemble with custom or equal weights
@@ -1210,6 +1304,102 @@ def save_results_summary(
 
 
 # ============================================================================
+# EVALUATION - Training Results Evaluation
+# ============================================================================
+
+# Evaluate and display training results for all models
+def evaluate_training_results(
+    baseline_results: Dict[str, Dict[str, Any]],
+    boosting_results: Dict[str, Dict[str, Any]],
+    ensemble_results: Optional[Dict[str, Any]] = None
+) -> pd.DataFrame:
+    """
+    Evaluate and display training results (CV scores) for all models
+    
+    Parameters:
+    -----------
+    baseline_results : Dict
+        Results from train_all_baseline_models
+    boosting_results : Dict
+        Results from train_all_boosting_models
+    ensemble_results : Dict, optional
+        Results from ensemble models
+        
+    Returns:
+    --------
+    pd.DataFrame : Training evaluation results sorted by CV score
+    """
+    print("\n" + "=" * 70)
+    print("📊 Training Results Evaluation (Cross-Validation Scores)")
+    print("=" * 70 + "\n")
+    
+    data = []
+    
+    # Baseline models
+    print("📍 Baseline Models:")
+    print("-" * 70)
+    for name, result in baseline_results.items():
+        cv_mean = result['cv_mean']
+        cv_std = result['cv_std']
+        data.append({
+            'Model': name,
+            'CV Mean Score': cv_mean,
+            'CV Std': cv_std,
+            'Type': 'Baseline'
+        })
+        print(f"  {name:25s} → CV: {cv_mean:.4f} (±{cv_std:.4f})")
+    
+    # Boosting models
+    print("\n📍 Boosting Models:")
+    print("-" * 70)
+    for name, result in boosting_results.items():
+        cv_mean = result['cv_mean']
+        cv_std = result['cv_std']
+        data.append({
+            'Model': name,
+            'CV Mean Score': cv_mean,
+            'CV Std': cv_std,
+            'Type': 'Boosting'
+        })
+        print(f"  {name:25s} → CV: {cv_mean:.4f} (±{cv_std:.4f})")
+    
+    # Ensemble models
+    if ensemble_results:
+        print("\n📍 Ensemble Models:")
+        print("-" * 70)
+        if 'stacking' in ensemble_results:
+            cv_mean = ensemble_results['stacking']['cv_mean']
+            cv_std = ensemble_results['stacking']['cv_std']
+            data.append({
+                'Model': 'Stacking',
+                'CV Mean Score': cv_mean,
+                'CV Std': cv_std,
+                'Type': 'Ensemble'
+            })
+            print(f"  {'Stacking':25s} → CV: {cv_mean:.4f} (±{cv_std:.4f})")
+    
+    # Create DataFrame and sort
+    df = pd.DataFrame(data)
+    df = df.sort_values('CV Mean Score', ascending=False).reset_index(drop=True)
+    
+    # Display summary table
+    print("\n" + "=" * 70)
+    print("📋 Summary Table (Sorted by CV Score):")
+    print("=" * 70)
+    print(df.to_string(index=False))
+    
+    # Best model
+    best = df.iloc[0]
+    print("\n" + "=" * 70)
+    print(f"🏆 Best Model: {best['Model']}")
+    print(f"   CV Score: {best['CV Mean Score']:.4f} (±{best['CV Std']:.4f})")
+    print(f"   Type: {best['Type']}")
+    print("=" * 70 + "\n")
+    
+    return df
+
+
+# ============================================================================
 # MAIN - Usage Examples
 # ============================================================================
 
@@ -1254,20 +1444,13 @@ if __name__ == "__main__":
     print(f"🎯 Best Model: {best_name}")
     print(f"   CV Score: {best_score:.4f}")
     
-    # Step 4: Make predictions
-    print("\n📍 Step 4: Making predictions on test set")
-    predictions = predict_with_best_model(
+    # Step 4: Evaluate training results
+    print("\n📍 Step 4: Evaluating training results")
+    evaluation_df = evaluate_training_results(
         all_results['baseline_results'],
         all_results['boosting_results'],
-        X_test,
         ensemble_results
     )
-    
-    test_accuracy = accuracy_score(y_test, predictions)
-    print(f"✅ Test Accuracy: {test_accuracy:.4f}")
-    
-    print("\n📊 Classification Report:")
-    print(classification_report(y_test, predictions, target_names=['Class 0', 'Class 1']))
     
     # Step 5: Save summary
     save_results_summary(
