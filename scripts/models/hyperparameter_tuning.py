@@ -13,63 +13,57 @@ from typing import Dict, Optional, Any
 import warnings
 warnings.filterwarnings('ignore')
 
-
-def get_param_grid(model_type: str) -> Dict:
+def get_param_grid_minimal(model_type: str, task_type: str = "classification") -> dict:
     """
-    Get parameter grid for a specific model
+    Minimal param grid for core ML models, suitable for a course or hackathon.
+    Only the most relevant parameters for tuning manually.
+    """
     
-    Parameters:
-    -----------
-    model_type : str
-        Model type: 'rf', 'xgb', 'lgbm', 'cat'
-        
-    Returns:
-    --------
-    Dict : parameter grid
-    """
-    param_grids = {
+    grids = {
+        'logreg': {
+            'C': [0.1, 1.0, 10],
+            'max_iter': [100, 200]
+        },
+        'dt': {
+            'max_depth': [None, 5, 10],
+            'min_samples_split': [2, 5]
+        },
         'rf': {
-            'n_estimators': [100, 200, 300, 500],
-            'max_depth': [5, 10, 15, 20, None],
-            'min_samples_split': [2, 5, 10, 20],
-            'min_samples_leaf': [1, 2, 5, 10],
-            'max_features': ['sqrt', 'log2', None],
-            'bootstrap': [True, False]
+            'n_estimators': [100, 200],
+            'max_depth': [None, 5, 10],
+            'min_samples_split': [2, 5]
         },
         'xgb': {
-            'n_estimators': [100, 200, 300, 500],
-            'max_depth': [3, 5, 7, 9],
-            'learning_rate': [0.01, 0.05, 0.1, 0.2],
-            'subsample': [0.6, 0.8, 1.0],
-            'colsample_bytree': [0.6, 0.8, 1.0],
-            'min_child_weight': [1, 3, 5, 7],
-            'gamma': [0, 0.1, 0.2, 0.3],
-            'reg_alpha': [0, 0.1, 0.5, 1],
-            'reg_lambda': [0.5, 1, 2, 5]
+            'n_estimators': [100, 200],
+            'max_depth': [3, 5],
+            'learning_rate': [0.05, 0.1]
         },
         'lgbm': {
-            'n_estimators': [100, 200, 300, 500],
-            'max_depth': [3, 5, 7, 9, -1],
-            'learning_rate': [0.01, 0.05, 0.1, 0.2],
-            'subsample': [0.6, 0.8, 1.0],
-            'colsample_bytree': [0.6, 0.8, 1.0],
-            'min_child_samples': [5, 10, 20, 30],
-            'num_leaves': [15, 31, 63, 127],
-            'reg_alpha': [0, 0.1, 0.5, 1],
-            'reg_lambda': [0.5, 1, 2, 5]
+            'n_estimators': [100, 200],
+            'max_depth': [3, 5, -1],
+            'learning_rate': [0.05, 0.1]
         },
         'cat': {
-            'iterations': [100, 200, 300, 500],
-            'depth': [4, 6, 8, 10],
-            'learning_rate': [0.01, 0.05, 0.1, 0.2],
-            'subsample': [0.6, 0.8, 1.0],
-            'colsample_bylevel': [0.6, 0.8, 1.0],
-            'min_data_in_leaf': [1, 5, 10, 20],
-            'l2_leaf_reg': [1, 3, 5, 7, 9]
+            'iterations': [100, 200],
+            'depth': [4, 6],
+            'learning_rate': [0.05, 0.1]
         }
     }
-    
-    return param_grids.get(model_type, {})
+
+    grid = grids.get(model_type, {})
+
+    # Add regression objective if needed
+    if task_type == "regression":
+        if model_type == "xgb":
+            grid['objective'] = ['reg:squarederror']
+        elif model_type == "lgbm":
+            grid['objective'] = ['regression']
+        elif model_type == "cat":
+            grid['loss_function'] = ['RMSE']
+        elif model_type == "logreg":
+            grid = {}  # LogisticRegression לא רלוונטי לרגרסיה
+
+    return grid
 
 
 def tune_model(
@@ -281,7 +275,6 @@ def export_tuning_results(
             f.write("\n")
     
     print(f"💾 Parameters saved to {filename}")
-
 
 # Quick Tuning Templates - Fast tuning functions
 

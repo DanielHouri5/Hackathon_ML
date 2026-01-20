@@ -1,16 +1,37 @@
+"""Cross-validation utilities to report model stability and performance.
+
+Provides a convenience function tailored for quick, readable CV
+reports (handy during hackathons). The function supports both
+classification and regression tasks and prints a compact summary of
+fold-level metrics while returning aggregated scores for programmatic
+use.
+"""
+
 import numpy as np
-import pandas as pd 
+import pandas as pd
 from sklearn.model_selection import KFold, StratifiedKFold
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, mean_squared_error
 
-import numpy as np
-import pandas as pd 
-from sklearn.model_selection import KFold, StratifiedKFold
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, mean_squared_error
 
 def cross_validation_stability(model, X, y, task="classification", metric="accuracy", n_splits=5):
-    """
-    כללי להאקתון: מבצע CV ומדפיס דוח ביצועים מעוצב ונוח לקריאה.
+    """Run cross-validation and print a styled performance report.
+
+    Parameters
+    - model: estimator implementing ``fit`` and ``predict``.
+    - X: pandas.DataFrame or numpy.ndarray of features.
+    - y: array-like target values.
+    - task: "classification" or "regression".
+    - metric: primary metric name (unused for now, retained for API compatibility).
+    - n_splits: number of CV folds.
+
+    Returns
+    - dict: mean scores per metric (or ``None`` for metrics with no values).
+
+    Behavior
+    - Converts numpy arrays to DataFrame/Series when needed.
+    - Uses StratifiedKFold for classification and KFold for regression.
+    - Trains the model in each fold, collects metrics, prints a
+      human-readable report, and returns aggregated results.
     """
     if isinstance(X, np.ndarray):
         X = pd.DataFrame(X, columns=[f'f{i}' for i in range(X.shape[1])])
@@ -21,7 +42,7 @@ def cross_validation_stability(model, X, y, task="classification", metric="accur
 
     if task == "classification":
         cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
-        pos_label = y.value_counts().index[-1] 
+        pos_label = y.value_counts().index[-1]
     else:
         cv = KFold(n_splits=n_splits, shuffle=True, random_state=42)
 
@@ -40,13 +61,13 @@ def cross_validation_stability(model, X, y, task="classification", metric="accur
         else:
             scores_map['rmse'].append(mean_squared_error(y_test, y_pred, squared=False))
 
-    # --- יצירת דוח מעוצב ---
+    # --- Create formatted report ---
     print("\n" + "="*40)
     print(f"📊 CROSS-VALIDATION REPORT ({task.upper()})")
     print("="*40)
 
     if task == "classification":
-        # סידור המדדים בטבלה קטנה וברורה
+        # Arrange metrics into a compact, readable table
         report = {
             "Accuracy":  f"{np.mean(scores_map['accuracy']):.4f} (±{np.std(scores_map['accuracy']):.4f})",
             "Precision": f"{np.mean(scores_map['precision']):.4f}",
@@ -62,5 +83,5 @@ def cross_validation_stability(model, X, y, task="classification", metric="accur
 
     print("="*40 + "\n")
 
-    # החזרת המילון המקורי לשימוש בקוד (אם צריך)
+    # Return the original scores map for programmatic use (if needed)
     return {k: (np.mean(v) if v else None) for k, v in scores_map.items()}
