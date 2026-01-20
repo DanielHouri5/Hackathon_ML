@@ -10,5 +10,5 @@ venv/
 .env
 
 # Outputs
-outputs/*.png
-outputs/*.pkl
+# outputs/*.png
+# outputs/*.pkl
