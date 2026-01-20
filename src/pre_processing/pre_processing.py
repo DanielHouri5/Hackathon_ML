@@ -142,7 +142,21 @@ def add_clustering_features(df, n_clusters=5):
     df['cluster_feature'] = kmeans.fit_predict(scaled_data)
     
     return df
+
+def add_custom_features(df):
+    # Smart Interaction Features based on Correlation Map
+    df['edu_age_inter'] = df['education.num'] * df['age']
+    df['cap_gain_loss_ratio'] = df['capital.gain'] - df['capital.loss']
+    df['work_hours_edu'] = df['hours.per.week'] * df['education.num']
+
+    df['is_married'] = df['marital.status'].isin(['Married-civ-spouse', 'Married-AF-spouse']).astype(int)
+    df['net_capital_log'] = np.sign(df['cap_gain_loss_ratio']) * np.log1p(np.abs(df['cap_gain_loss_ratio']))
+    df['high_capital_gain'] = (df['capital.gain'] > 5000).astype(int)
     
+    # Drop noise features
+    df.drop(['fnlwgt', 'native.country'], axis=1, inplace=True)
+    return df
+
 def split_data_triple(df, target_col):
     """Splits data into Train (60%), Validation (20%), and Test (20%) for Blending."""
     X = df.drop(columns=[target_col])
@@ -211,40 +225,20 @@ def run_preprocessing_pipeline():
     # 4. Outlier Removal (Using fixed parameters)
     print("\n--- Step 4: Removing outliers (Safe Mode) ---")
     pre_outlier_count = df.shape[0]
-    df = detect_outliers_dbscan(df, eps=3, min_samples=3) 
+    df = detect_outliers_dbscan(df, eps=2.5, min_samples=3) 
     print(f"Outliers handled. Rows removed: {pre_outlier_count - df.shape[0]}")   
-    
-    # --- Step 4: Refined Outlier Removal ---
-    # print("\n--- Step 4: Removing outliers (Hybrid Mode) ---")
-    # pre_cleaning_rows = df.shape[0]
-
-    # # A. Targeted IQR (Only on specific columns where logic dictates)
-    # # Avoid applying IQR to everything to prevent massive data loss
-    # target_iqr_cols = ['age', 'hours.per.week'] 
-    # df = detect_outliers_iqr(df, target_iqr_cols)
-    # print(f"Rows after IQR: {df.shape[0]}")
-
-    # # B. Global DBSCAN (Safe Mode)
-    # # We use a high EPS to catch only the truly isolated clusters
-    # df = detect_outliers_dbscan(df, eps=2.5, min_samples=3)
-
-    # print(f"Hybrid Outlier Removal complete. Total rows removed: {pre_cleaning_rows - df.shape[0]}")
 
     # 5. Feature Engineering (Clustering)
     print("\n--- Step 5: Injecting clustering features ---")
     df = add_clustering_features(df, n_clusters=5)
-    print(f"Clusters Distribution:\n{df['cluster_feature'].value_counts()}")
-    # Smart Interaction Features based on Correlation Map
-    df['edu_age_inter'] = df['education.num'] * df['age']
-    df['cap_gain_loss_ratio'] = df['capital.gain'] - df['capital.loss']
-    df['work_hours_edu'] = df['hours.per.week'] * df['education.num']
-
-    # Drop noise features
-    df.drop(['fnlwgt', 'native.country'], axis=1, inplace=True)
+    print(f"Clusters Distribution:\n{df['cluster_feature'].value_counts()}")    
 
     print("\n Generating diagnostic plots...")
     # Save a diagnostic plot after feature engineering
     save_diagnostic_plots(df, "final_preprocessed")
+
+    # Additional Custom Features
+    df = add_custom_features(df)
 
     # 6. Data Splitting
     print("\n--- Step 6: Splitting data ---")
@@ -267,6 +261,8 @@ def run_preprocessing_pipeline():
     os.makedirs(config.ARTIFACTS_DIR, exist_ok=True)
     joblib.dump(processed_data, os.path.join(config.ARTIFACTS_DIR, "processed_bundles.joblib"))
     print("Pre-processing finished successfully!")
+
+    return processed_data
 
 if __name__ == "__main__":
     run_preprocessing_pipeline()
