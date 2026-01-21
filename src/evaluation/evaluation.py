@@ -1,19 +1,14 @@
-"""
-evaluation.py - Utility file for model evaluation, stability, and explainability.
-Designed for hackathons: generic, fast, and visual.
-"""
-
+import os
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import shap
 from sklearn.feature_selection import mutual_info_classif, mutual_info_regression
 from sklearn.model_selection import KFold, StratifiedKFold
-from sklearn.metrics import (accuracy_score, precision_score, recall_score, 
-                             f1_score, mean_squared_error)
+from sklearn.metrics import (accuracy_score, precision_score, recall_score, f1_score, mean_squared_error)
+import src.config as config
 
 # --- 1. DATA LEAKAGE & FEATURE RELEVANCE ---
-
 def detect_data_leakage(X, y, task="classification"):
     """
     Computes Mutual Information to find highly influential features or potential leakage.
@@ -57,7 +52,6 @@ def detect_data_leakage(X, y, task="classification"):
     return df_results
 
 # --- 2. MODEL EXPLAINABILITY (SHAP) ---
-
 def shap_tree_summary(model, X, max_features=10, title="SHAP Feature Impact"):
     """
     Generates a SHAP summary plot. Handles different output formats of SHAP values.
@@ -91,10 +85,10 @@ def shap_tree_summary(model, X, max_features=10, title="SHAP Feature Impact"):
     shap.summary_plot(shap_values_to_plot, X_sample, max_display=max_features, show=False)
     plt.title(title)
     plt.tight_layout()
-    plt.show()
+    plt.savefig(os.path.join(config.MODELS_PLOTS_DIR, "shap_summary.png"))
+    plt.close()
 
 # --- 3. CROSS-VALIDATION STABILITY ---
-
 def cross_validation_stability(model, X, y, task="classification", n_splits=5):
     """
     Runs CV and reports on the stability (standard deviation) of the results.

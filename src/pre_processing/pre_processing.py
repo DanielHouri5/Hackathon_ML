@@ -1,4 +1,3 @@
-# src/pre_processing/pre_processing.py
 import pandas as pd
 import numpy as np
 import os
@@ -8,23 +7,46 @@ from sklearn.impute import SimpleImputer
 from sklearn.cluster import KMeans, DBSCAN
 import src.config as config
 import joblib
-import matplotlib.pyplot as plt
-import seaborn as sns
+from src.visualization.pre_process_visualization import plot_clusters_pca_2d, plot_heatmap_auto, plot_target_binary
 
+# =============================================================================
+# 1. DATA LOADING & TARGET ENCODING
+# =============================================================================
 def load_data(file_path):
-    """Loads data based on file extension."""
-    extension = os.path.splitext(file_path)[1].lower()
-    if extension == '.csv':
-        return pd.read_csv(file_path)
-    elif extension == '.parquet':
-        return pd.read_parquet(file_path)
-    elif extension in ['.xls', '.xlsx']:
-        return pd.read_excel(file_path)
-    else:
-        raise ValueError(f"Unsupported file format: {extension}")
+    print("\n--- Step 1: Loading raw data ---")
+    df = pd.read_csv(file_path)
+    print(f"Initial Shape: {df.shape}")
+    return df
+
+def encode_target(df, target_col):
+    print(f"\n--- Encoding target column: {target_col} ---")
+    le = LabelEncoder()
+    df[target_col] = le.fit_transform(df[target_col].astype(str))
+    print(f"Target encoded. Classes: {le.classes_}")
+    return df, le
+
+# =============================================================================
+# 2. DATA CLEANING & OUTLIER DETECTION & MEMORY REDUCTION
+# =============================================================================
+def smart_impute(df):
+    print("\n--- Step 3: Handling missing values ---")
+    df = df.replace('?', np.nan)
+    num_cols = df.select_dtypes(include=[np.number]).columns
+    category_cols = df.select_dtypes(include=['object']).columns
+
+    if not num_cols.empty:
+        num_imputer = SimpleImputer(strategy='median')
+        df[num_cols] = num_imputer.fit_transform(df[num_cols])
+
+    if not category_cols.empty:
+        cat_imputer = SimpleImputer(strategy='most_frequent')
+        df[category_cols] = cat_imputer.fit_transform(df[category_cols])
+
+    print(f"Post-Cleaning Nulls: {df.isnull().sum().sum()}")
+    return df
 
 def reduce_mem_usage(df):
-    """Iterates through all columns and modifies data types to reduce memory footprint."""
+    print("\n--- Step 2: Reducing memory usage ---")
     start_mem = df.memory_usage().sum() / 1024**2
     for col in df.columns:
         col_type = df[col].dtype
@@ -49,28 +71,83 @@ def reduce_mem_usage(df):
     print(f'Memory usage decreased to {end_mem:.2f} MB ({100 * (start_mem - end_mem) / start_mem:.1f}% reduction)')
     return df
 
-def smart_impute(df):
-    """Applies different imputation strategies for numerical and categorical data."""
-    num_cols = df.select_dtypes(include=[np.number]).columns
-    category_cols = df.select_dtypes(include=['object']).columns
+def detect_outliers_dbscan(df, eps=2.5, min_samples=5):
+    print("\n--- Step 4: Removing outliers (Safe Mode) ---")
+    pre_count = df.shape[0]
+    numerical_df = df.select_dtypes(include=[np.number])
+    # Scaling is required for DBSCAN to work correctly
+    scaler = StandardScaler()
+    scaled_data = scaler.fit_transform(numerical_df)
+    
+    dbscan = DBSCAN(eps=eps, min_samples=min_samples)
+    clusters = dbscan.fit_predict(scaled_data)
 
-    if not num_cols.empty:
-        num_imputer = SimpleImputer(strategy='median')
-        df[num_cols] = num_imputer.fit_transform(df[num_cols])
+    df_cleaned = df[clusters != -1]
+    print(f"Outliers handled. Rows removed: {pre_count - df_cleaned.shape[0]}")   
+    # -1 represents noise/outliers in DBSCAN
+    return df_cleaned
 
-    if not category_cols.empty:
-        cat_imputer = SimpleImputer(strategy='most_frequent')
-        df[category_cols] = cat_imputer.fit_transform(df[category_cols])
+# =============================================================================
+# 3. FEATURE ENGINEERING & CLUSTERING
+# =============================================================================
+def add_clustering_features(df, n_clusters=5):
+    print("\n--- Step 5: Injecting clustering features ---")
+    # 1. Select only top numerical features for clustering (to avoid noise)
+    clustering_cols = [col for col in ['age', 'education.num', 'hours.per.week', 'capital.gain'] if col in df.columns]
+    
+    if not clustering_cols:
+        clustering_cols = df.select_dtypes(include=[np.number]).columns.tolist()
 
+    # 2. Internal Scaling (Crucial for K-Means distance calculation)
+    scaler = StandardScaler()
+    scaled_data = scaler.fit_transform(df[clustering_cols])
+
+    # 3. Fit and Predict
+    kmeans = KMeans(n_clusters=n_clusters, random_state=config.RANDOM_STATE, n_init=10)
+    df['cluster_feature'] = kmeans.fit_predict(scaled_data)
+    
+    plot_clusters_pca_2d(df, cluster_col="cluster_feature", title="K-Means Clusters Visualization")
+
+    print(f"Clusters Distribution:\n{df['cluster_feature'].value_counts()}")    
     return df
 
+def add_custom_features(df):
+    df['edu_age_inter'] = df['education.num'] * df['age']
+    df['work_hours_edu'] = df['hours.per.week'] * df['education.num']
+    df['net_capital'] = df['capital.gain'] - df['capital.loss']
+    df['has_capital_activity'] = ((df['capital.gain'] > 0) | (df['capital.loss'] > 0)).astype(int)
+    
+    df['work_type'] = pd.cut(df['hours.per.week'], 
+                             bins=[0, 35, 45, 100], 
+                             labels=['part_time', 'full_time', 'overtime']).astype(str)
+    
+    if 'sex' in df.columns and 'relationship' in df.columns:
+        df['sex_rel_inter'] = df['sex'].astype(str) + "_" + df['relationship'].astype(str)
+
+    df['is_married'] = df['marital.status'].isin(['Married-civ-spouse', 'Married-AF-spouse']).astype(int)
+    df['net_capital_log'] = np.sign(df['net_capital']) * np.log1p(np.abs(df['net_capital']))
+    
+    cols_to_drop = ['fnlwgt', 'native.country']
+    df.drop([c for c in cols_to_drop if c in df.columns], axis=1, inplace=True)
+    
+    return df
+
+# =============================================================================
+# 4. DATA SPLITTING & FINAL ENCODING
+# =============================================================================
+def split_data_triple(df, target_col):
+    print("\n--- Step 6: Splitting data ---")
+    X = df.drop(columns=[target_col])
+    y = df[target_col]
+    
+    X_train, X_rem, y_train, y_rem = train_test_split(X, y, train_size=0.6, random_state=config.RANDOM_STATE)
+    X_val, X_test, y_val, y_test = train_test_split(X_rem, y_rem, test_size=0.5, random_state=config.RANDOM_STATE)
+    
+    print(f"Final Split Shapes: Train: {X_train.shape}, Val: {X_val.shape}, Test: {X_test.shape}")
+    return X_train, X_val, X_test, y_train, y_val, y_test
+
 def encode_and_scale(X_train, X_val, X_test):
-    """
-    Handles encoding and scaling properly to avoid Data Leakage.
-    Returns:
-    - (X_train_le, X_val_le, X_test_le): For tree-based models (Label Encoding)
-    - (X_train_oh, X_val_oh, X_test_oh): For linear models (One-Hot + Scaling)
-    """
+    print("\n--- Step 7: Encoding & Scaling (Prevention of Leakage) ---")
     # Identify column types
     cat_cols = X_train.select_dtypes(include=['object']).columns
     num_cols = X_train.select_dtypes(include=[np.number]).columns
@@ -98,182 +175,50 @@ def encode_and_scale(X_train, X_val, X_test):
 
     return (X_train_le, X_val_le, X_test_le), (X_train_oh_s, X_val_oh_s, X_test_oh_s)
 
-def detect_outliers_iqr(df, columns):
-    """Filters outliers using the Interquartile Range method (Univariate)."""
-    for col in columns:
-        Q1 = df[col].quantile(0.25)
-        Q3 = df[col].quantile(0.75)
-        IQR = Q3 - Q1
-        lower_bound = Q1 - 1.5 * IQR
-        upper_bound = Q3 + 1.5 * IQR
-        df = df[(df[col] >= lower_bound) & (df[col] <= upper_bound)]
-    return df
-
-def detect_outliers_dbscan(df, eps=0.5, min_samples=5):
-    """Filters outliers using DBSCAN clustering (Multivariate)."""
-    numerical_df = df.select_dtypes(include=[np.number])
-    # Scaling is required for DBSCAN to work correctly
-    scaler = StandardScaler()
-    scaled_data = scaler.fit_transform(numerical_df)
-    
-    dbscan = DBSCAN(eps=eps, min_samples=min_samples)
-    clusters = dbscan.fit_predict(scaled_data)
-    
-    # -1 represents noise/outliers in DBSCAN
-    return df[clusters != -1]
-
-def add_clustering_features(df, n_clusters=5):
-    """
-    Generates K-Means clusters based on the most influential features.
-    Applies internal scaling to ensure clusters are not biased by feature magnitude.
-    """
-    # 1. Select only top numerical features for clustering (to avoid noise)
-    # Recommended for Adult dataset: age, education.num, hours.per.week
-    clustering_cols = [col for col in ['age', 'education.num', 'hours.per.week', 'capital.gain'] if col in df.columns]
-    
-    if not clustering_cols:
-        clustering_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-
-    # 2. Internal Scaling (Crucial for K-Means distance calculation)
-    scaler = StandardScaler()
-    scaled_data = scaler.fit_transform(df[clustering_cols])
-
-    # 3. Fit and Predict
-    kmeans = KMeans(n_clusters=n_clusters, random_state=config.RANDOM_STATE, n_init=10)
-    df['cluster_feature'] = kmeans.fit_predict(scaled_data)
-    
-    return df
-
-def add_custom_features(df):
-    df['edu_age_inter'] = df['education.num'] * df['age']
-    df['work_hours_edu'] = df['hours.per.week'] * df['education.num']
-    
-    
-    df['net_capital'] = df['capital.gain'] - df['capital.loss']
-    df['has_capital_activity'] = ((df['capital.gain'] > 0) | (df['capital.loss'] > 0)).astype(int)
-    
-    df['work_type'] = pd.cut(df['hours.per.week'], 
-                             bins=[0, 35, 45, 100], 
-                             labels=['part_time', 'full_time', 'overtime']).astype(str)
-    
-    if 'sex' in df.columns and 'relationship' in df.columns:
-        df['sex_rel_inter'] = df['sex'].astype(str) + "_" + df['relationship'].astype(str)
-
-    df['is_married'] = df['marital.status'].isin(['Married-civ-spouse', 'Married-AF-spouse']).astype(int)
-    
-    df['net_capital_log'] = np.sign(df['net_capital']) * np.log1p(np.abs(df['net_capital']))
-    
-    cols_to_drop = ['fnlwgt', 'native.country']
-    df.drop([c for c in cols_to_drop if c in df.columns], axis=1, inplace=True)
-    
-    return df
-
-def split_data_triple(df, target_col):
-    """Splits data into Train (60%), Validation (20%), and Test (20%) for Blending."""
-    X = df.drop(columns=[target_col])
-    y = df[target_col]
-    
-    X_train, X_rem, y_train, y_rem = train_test_split(X, y, train_size=0.6, random_state=config.RANDOM_STATE)
-    X_val, X_test, y_val, y_test = train_test_split(X_rem, y_rem, test_size=0.5, random_state=config.RANDOM_STATE)
-    
-    return X_train, X_val, X_test, y_train, y_val, y_test
-
-def save_diagnostic_plots(df, stage_name):
-    """
-    Generates and saves diagnostic plots. 
-    Uses a temporary copy to encode categorical data for correlation analysis.
-    """
-    os.makedirs(config.PLOTS_DIR, exist_ok=True)
-    
-    # Create a temporary copy for visualization purposes only
-    plot_df = df.copy()
-    
-    # Temporarily encode categorical columns to include them in the correlation matrix
-    le = LabelEncoder()
-    categorical_cols = plot_df.select_dtypes(include=['object']).columns
-    for col in categorical_cols:
-        plot_df[col] = le.fit_transform(plot_df[col].astype(str))
-    
-    # 1. Target Distribution Plot
-    plt.figure(figsize=(8, 5))
-    sns.countplot(x=config.TARGET_COLUMN, data=plot_df)
-    plt.title(f"Target Distribution - {stage_name}")
-    plt.savefig(os.path.join(config.PLOTS_DIR, f"target_dist_{stage_name}.png"))
-    plt.close()
-
-    # 2. Full Correlation Heatmap
-    plt.figure(figsize=(14, 10))
-    correlation_matrix = plot_df.corr()
-    
-    sns.heatmap(correlation_matrix, annot=True, cmap='coolwarm', fmt=".2f", linewidths=0.5)
-    plt.title(f"Full Feature Correlation (Encoded) - {stage_name}")
-    plt.savefig(os.path.join(config.PLOTS_DIR, f"correlation_{stage_name}.png"))
-    plt.close()
-    
-    print(f"Diagnostic plots saved successfully to: {config.PLOTS_DIR}")
-
-def run_preprocessing_pipeline():
-    # 1. Ingestion
-    print("\n--- Step 1: Loading raw data ---")
-    df = load_data(config.RAW_DATA_PATH)
-    print(f"Initial Shape: {df.shape}")
-
-    # --- CRITICAL: Encode Target immediately ---
-    print(f"Encoding target column: {config.TARGET_COLUMN}")
-    target_le = LabelEncoder()
-    df[config.TARGET_COLUMN] = target_le.fit_transform(df[config.TARGET_COLUMN].astype(str))
-    print(f"Target encoded. Classes: {target_le.classes_}")
-
-    # 2. Memory Optimization
-    print("\n--- Step 2: Reducing memory usage ---")
-    df = reduce_mem_usage(df)
-    
-    # 3. Imputation (Only fill missing, don't encode text yet)
-    print("\n--- Step 3: Handling missing values ---")
-    df = smart_impute(df) 
-    print(f"Post-Cleaning Nulls: {df.isnull().sum().sum()}")
-
-    # 4. Outlier Removal (Using fixed parameters)
-    print("\n--- Step 4: Removing outliers (Safe Mode) ---")
-    pre_outlier_count = df.shape[0]
-    df = detect_outliers_dbscan(df, eps=2.5, min_samples=3) 
-    print(f"Outliers handled. Rows removed: {pre_outlier_count - df.shape[0]}")   
-
-    # 5. Feature Engineering (Clustering)
-    print("\n--- Step 5: Injecting clustering features ---")
-    df = add_clustering_features(df, n_clusters=5)
-    print(f"Clusters Distribution:\n{df['cluster_feature'].value_counts()}")    
-
-    print("\n Generating diagnostic plots...")
-    # Save a diagnostic plot after feature engineering
-    save_diagnostic_plots(df, "final_preprocessed")
-
-    # Additional Custom Features
-    df = add_custom_features(df)
-
-    # 6. Data Splitting
-    print("\n--- Step 6: Splitting data ---")
-    X_train, X_val, X_test, y_train, y_val, y_test = split_data_triple(df, config.TARGET_COLUMN)
-    print(f"Final Split Shapes: Train: {X_train.shape}, Val: {X_val.shape}, Test: {X_test.shape}")
-    
-    # 7. Advanced Encoding & Scaling
-    print("\n--- Step 7: Encoding & Scaling (Prevention of Leakage) ---")
-    (X_train_le, X_val_le, X_test_le), (X_train_oh_s, X_val_oh_s, X_test_oh_s) = \
-        encode_and_scale(X_train, X_val, X_test)
-    
-    # 8. Saving Artifacts
-    print("\n--- Step 8: Saving artifacts ---")
+# =============================================================================
+# 5. ARTIFACT PERSISTENCE
+# =============================================================================
+def save_preprocessing_artifacts(trees_bundle, linear_bundle, target_le):
+    print("\n--- Step 10: Saving artifacts ---")
     processed_data = {
-        'trees_data': (X_train_le, X_val_le, X_test_le, y_train, y_val, y_test),
-        'linear_data': (X_train_oh_s, X_val_oh_s, X_test_oh_s, y_train, y_val, y_test),
-        'target_classes': target_le.classes_.tolist()
+        'trees_data': trees_bundle,   
+        'linear_data': linear_bundle,
+        'target_classes': target_le.classes_.tolist(),
+        'target_encoder': target_le
     }
-    
     os.makedirs(config.ARTIFACTS_DIR, exist_ok=True)
     joblib.dump(processed_data, os.path.join(config.ARTIFACTS_DIR, "processed_bundles.joblib"))
-    print("Pre-processing finished successfully!")
-
+    print("Success: All artifacts saved!")
     return processed_data
+
+# =============================================================================
+# 6. MAIN PIPELINE EXECUTION
+# =============================================================================
+def run_preprocessing_pipeline():
+    # 1. Ingestion
+    df = load_data(config.RAW_DATA_PATH)
+    plot_target_binary(df[config.TARGET_COLUMN])
+    df, target_le = encode_target(df, config.TARGET_COLUMN)
+
+    # 2. Preparation & Cleaning
+    df = smart_impute(df) 
+    df = reduce_mem_usage(df)
+    df = detect_outliers_dbscan(df, eps=2.5, min_samples=3) 
+
+    # 3. Feature Engineering 
+    df = add_clustering_features(df, n_clusters=5)
+    df = add_custom_features(df)
+    plot_heatmap_auto(df)
+
+    # 4. Splitting & Transformation
+    X_train, X_val, X_test, y_train, y_val, y_test = split_data_triple(df, config.TARGET_COLUMN)
+    le_bundle, oh_bundle = encode_and_scale(X_train, X_val, X_test)
+
+    # 5. Packaging
+    trees_bundle = (*le_bundle, y_train, y_val, y_test)
+    linear_bundle = (*oh_bundle, y_train, y_val, y_test)
+    
+    return save_preprocessing_artifacts(trees_bundle, linear_bundle, target_le)
 
 if __name__ == "__main__":
     run_preprocessing_pipeline()
