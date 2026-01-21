@@ -292,20 +292,21 @@ def main():
     all_experiments.update(execute_phase(linear_keys, X_tr_l, y_tr, X_val_l, y_val, "Linear Models"))
 
     # ========================================
-    # 🚀 STARTING ENSEMBLE PHASE (Blending Only)
+    # 🚀 STARTING ENSEMBLE PHASE (Optimized)
     # ========================================
     print("\n" + "="*40)
-    print(" 🚀 STARTING ENSEMBLE PHASE (Blending) ")
+    print(" 🚀 STARTING ENSEMBLE PHASE (OPTIMIZED) ")
     print("="*40)
 
-    top_3_keys = ['xgboost', 'lightgbm', 'gradient_boosting']
+    # Top 5 models for maximum diversity (including linear for diversity)
+    top_5_keys = ['xgboost', 'lightgbm', 'gradient_boosting', 'random_forest', 'logistic_regression']
     
-    trained_top_3 = {}
-    trained_top_3 = {k: all_experiments[k]['model_object'] for k in top_3_keys if k in all_experiments}
+    trained_top_5 = {}
+    trained_top_5 = {k: all_experiments[k]['model_object'] for k in top_5_keys if k in all_experiments}
     
-    # Blending
-    print(f"🧬 Blending: Using Top 3 models: {list(trained_top_3.keys())}")
-    blender = BlendingEnsemble(trained_top_3, tree_keys=tree_keys)
+    # Blending with Top 5
+    print(f"🧬 Blending: Using Top 5 models: {list(trained_top_5.keys())}")
+    blender = BlendingEnsemble(trained_top_5, tree_keys=tree_keys)
     start_blend = time.time()
     blender.fit(X_val_t, X_val_l, y_val)
     
@@ -315,9 +316,29 @@ def main():
         "train_time": time.time() - start_blend
     }
 
-    print(f"\n🚀 Stacking: Using Top 3 models: {top_3_keys}")
-    stacking_templates = {k: clone(all_experiments[k]['model_object']) for k in top_3_keys}
-    stacker = StackingEnsemble(stacking_templates, n_splits=3, tree_keys=tree_keys)
+    # Stacking with OPTIMIZED Meta-Model (Ridge) + 3-fold CV + Diverse models
+    print(f"\n🚀 Stacking OPTIMIZED: Using Top 5 models (with diversity): {top_5_keys}")
+    print("   📊 Meta-Model: Ridge Regression (C=10 for strong regularization)")
+    print("   📊 CV Strategy: 3-fold (prevents overfitting)")
+    print("   📊 Diversity: Mixed tree + linear models")
+    
+    stacking_templates = {k: clone(all_experiments[k]['model_object']) for k in top_5_keys}
+    
+    # Simple but powerful Meta-Model: Logistic Regression with strong regularization
+    from sklearn.linear_model import LogisticRegression
+    meta_model = LogisticRegression(
+        C=10,  # Strong regularization to prevent overfitting
+        max_iter=2000,
+        random_state=42,
+        solver='lbfgs'
+    )
+    
+    stacker = StackingEnsemble(
+        stacking_templates, 
+        meta_model=meta_model,
+        n_splits=3,  # 3 folds is optimal - less overfitting
+        tree_keys=tree_keys
+    )
     start_stack = time.time()
     stacker.fit(X_tr_t, X_tr_l, y_tr)
     
