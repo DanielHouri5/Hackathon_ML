@@ -57,8 +57,7 @@ def plot_model_comparison(all_experiments, split='val'):
     plt.tight_layout()
     
     # שמירה אוטומטית (כמו שסיכמנו שיהיה מושלם)
-    save_path = os.path.join(config.PLOTS_DIR, f'model_comparison_detailed.png')
-    plt.savefig(save_path)
+    plt.savefig(config.MODELS_PLOTS_DIR, f'model_comparison_detailed.png')
     plt.show()
 
 def plot_roc_curve(all_experiments, X_val_le, X_val_oh, y_val, tree_models):
@@ -82,6 +81,7 @@ def plot_roc_curve(all_experiments, X_val_le, X_val_oh, y_val, tree_models):
     plt.ylabel('True Positive Rate')
     plt.title('Receiver Operating Characteristic (ROC)')
     plt.legend(loc='lower right')
+    plt.savefig(config.MODELS_PLOTS_DIR, 'roc_curve_all_models.png')
     plt.show()
 
 def plot_feature_importance(model, feature_names, top_n=15):
@@ -112,13 +112,15 @@ def plot_feature_importance(model, feature_names, top_n=15):
         plt.tight_layout()
         
         # שמירה אוטומטית
-        plt.savefig(os.path.join(config.PLOTS_DIR, f'feature_importance_{model_name}.png'))
+        plt.savefig(config.MODELS_PLOTS_DIR, f'feature_importance_{model_name}.png')
         plt.show()
     else:
         print(f"The model {model_name} does not support feature importance.")
 
 def plot_confusion_matrix(model, X_test, y_test, class_names=None):
     """מטריצת בלבול מעוצבת"""
+    model_name = model.__class__.__name__
+
     y_pred = model.predict(X_test)
     cm = confusion_matrix(y_test, y_pred)
     
@@ -128,7 +130,8 @@ def plot_confusion_matrix(model, X_test, y_test, class_names=None):
                 yticklabels=class_names if class_names else True)
     plt.xlabel('Predicted')
     plt.ylabel('Actual')
-    plt.title('Confusion Matrix')
+    plt.title('Confusion Matrix\n(Model: {model_name})')
+    plt.savefig(config.MODELS_PLOTS_DIR, f'confusion_matrix_{model_name}.png')
     plt.show()
 
 def plot_correlation_heatmap(df):
@@ -157,7 +160,7 @@ def plot_correlation_heatmap(df):
     plt.tight_layout()
     
     # שמירה
-    plt.savefig(os.path.join(config.PLOTS_DIR, 'correlation_heatmap_style.png'))
+    plt.savefig(os.path.join(config.PREPROCESS_PLOTS_DIR, 'correlation_heatmap.png'))
     plt.show()
 
 def plot_n_trees_vs_f1(model_key, X_train, y_train, X_val, y_val, n_trees_list=[10, 50, 100, 200, 500]):
@@ -189,4 +192,5 @@ def plot_n_trees_vs_f1(model_key, X_train, y_train, X_val, y_val, n_trees_list=[
     plt.ylabel('F1 Score')
     plt.title(f'Number of Trees vs Performance ({model_key})')
     plt.legend()
+    plt.savefig(config.MODELS_PLOTS_DIR, f'n_trees_vs_f1_{model_key}.png')
     plt.show()
