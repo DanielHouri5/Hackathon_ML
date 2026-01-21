@@ -144,17 +144,27 @@ def add_clustering_features(df, n_clusters=5):
     return df
 
 def add_custom_features(df):
-    # Smart Interaction Features based on Correlation Map
     df['edu_age_inter'] = df['education.num'] * df['age']
-    df['cap_gain_loss_ratio'] = df['capital.gain'] - df['capital.loss']
     df['work_hours_edu'] = df['hours.per.week'] * df['education.num']
+    
+    
+    df['net_capital'] = df['capital.gain'] - df['capital.loss']
+    df['has_capital_activity'] = ((df['capital.gain'] > 0) | (df['capital.loss'] > 0)).astype(int)
+    
+    df['work_type'] = pd.cut(df['hours.per.week'], 
+                             bins=[0, 35, 45, 100], 
+                             labels=['part_time', 'full_time', 'overtime']).astype(str)
+    
+    if 'sex' in df.columns and 'relationship' in df.columns:
+        df['sex_rel_inter'] = df['sex'].astype(str) + "_" + df['relationship'].astype(str)
 
     df['is_married'] = df['marital.status'].isin(['Married-civ-spouse', 'Married-AF-spouse']).astype(int)
-    df['net_capital_log'] = np.sign(df['cap_gain_loss_ratio']) * np.log1p(np.abs(df['cap_gain_loss_ratio']))
-    df['high_capital_gain'] = (df['capital.gain'] > 5000).astype(int)
     
-    # Drop noise features
-    df.drop(['fnlwgt', 'native.country'], axis=1, inplace=True)
+    df['net_capital_log'] = np.sign(df['net_capital']) * np.log1p(np.abs(df['net_capital']))
+    
+    cols_to_drop = ['fnlwgt', 'native.country']
+    df.drop([c for c in cols_to_drop if c in df.columns], axis=1, inplace=True)
+    
     return df
 
 def split_data_triple(df, target_col):

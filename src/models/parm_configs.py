@@ -37,12 +37,12 @@ DEFAULT_PARAMS = {
 
 # ==================== Hyperparameter Tuning Grids ====================
 PARAM_GRIDS = {
-    "logistic_regression": [
-        # lbfgs תומך רק ב-l2 או None
-        {"solver": ["lbfgs"], "C": np.logspace(-3, 3, 7), "penalty": ["l2"]},
-        # liblinear תומך ב-l1 ו-l2
-        {"solver": ["liblinear"], "C": np.logspace(-3, 3, 7), "penalty": ["l1", "l2"]}
-    ],
+    "logistic_regression": {
+        'penalty': ['l2'],           # lbfgs תומך רק ב-l2
+        'C': [0.1, 1.0, 10.0],       # פחות ערכים = ריצה מהירה יותר
+        'solver': ['lbfgs'],         # מוודא שזה מסונכרן עם הבנאי
+        'max_iter': [1000]
+    },
     "decision_tree": {
         "max_depth": [None, 5, 10, 20],
         "min_samples_leaf": [1, 2, 4],

@@ -3,6 +3,7 @@ import os
 import joblib
 import numpy as np
 import pandas as pd
+from sklearn import clone
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, root_mean_squared_error, mean_absolute_error, r2_score
 from sklearn.model_selection import ParameterGrid, ParameterSampler, RandomizedSearchCV
 from sklearn.linear_model import LogisticRegression
@@ -11,13 +12,18 @@ from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor, AdaB
 from xgboost import XGBClassifier, XGBRegressor
 from lightgbm import LGBMClassifier, LGBMRegressor, early_stopping, log_evaluation
 from catboost import CatBoostClassifier, CatBoostRegressor
+
+from .blending_ensemble import BlendingEnsemble
+from .stacking_ensemble import StackingEnsemble
 from .parm_configs import DEFAULT_PARAMS, PARAM_GRIDS
 from src.pre_processing.pre_processing import run_preprocessing_pipeline
 import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 # ==================== Model Builders ====================
 def build_logistic_regression(task_type="classification", **params):
-    params.setdefault('max_iter', 1000)
+    params.setdefault('max_iter', 1000) 
+    params.setdefault('solver', 'lbfgs') 
     return LogisticRegression(**params)
 
 def build_decision_tree(task_type="classification", **params):
@@ -44,9 +50,10 @@ def build_catboost(task_type="classification", **params):
 
 # ==================== Hyperparameter Tuning ====================
 
-def tune_and_report(model_key, X_train, y_train, task_type="classification"):
+# ==================== Hyperparameter Tuning ====================
+
+def run_tuning(model_key, X_train, y_train, task_type="classification"):
     param_dist = PARAM_GRIDS.get(model_key, {})
-    
     base_model = globals()[f"build_{model_key}"](task_type=task_type)
     
     if task_type == "classification":
@@ -67,43 +74,40 @@ def tune_and_report(model_key, X_train, y_train, task_type="classification"):
     else:
         total_combos = len(ParameterGrid(param_dist))
     
-    actual_n_iter = min(10, total_combos)
-
-    random_search = RandomizedSearchCV(
-        estimator=base_model,
+    rs = RandomizedSearchCV(
+        estimator=base_model, 
         param_distributions=param_dist,
-        n_iter=actual_n_iter,
-        cv=3,
+        n_iter=min(10, total_combos), 
+        cv=3, 
         scoring=scoring,
         refit=refit_metric, 
-        random_state=42,
-        n_jobs=-1,
-        verbose=0
+        random_state=42, 
+        n_jobs=-1
     )
-    
-    print(f"\n{model_key.replace('_', ' ').title()}:")
     
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore")
-        random_search.fit(X_train, y_train)
+        rs.fit(X_train, y_train)
+    return rs
+
+def report_tuning_results(model_key, search_results):
+    print(f"\n📌 {model_key.replace('_', ' ').title()} Hyperparameter Search Results:")
     
-    results_df = pd.DataFrame(random_search.cv_results_)
+    df = pd.DataFrame(search_results.cv_results_)
     
-    param_cols = [c for c in results_df.columns if 'param_' in c]
-    metric_cols = [f'mean_test_{m}' for m in scoring.keys()]
+    param_cols = [c for c in df.columns if 'param_' in c]
+    metric_cols = [c for c in df.columns if 'mean_test_' in c]
+    time_col = ['mean_fit_time'] 
     
-    summary_table = results_df[param_cols + metric_cols].copy()
+    summary = df[param_cols + metric_cols + time_col].copy()
     
-    new_names = {c: c.replace('param_', '') for c in param_cols}
-    new_names.update({f'mean_test_{m}': m for m in scoring.keys()})
-    summary_table = summary_table.rename(columns=new_names)
+    new_names = {c: c.replace('param_', '').replace('mean_test_', '') for c in (param_cols + metric_cols)}
+    new_names['mean_fit_time'] = 'train_time_avg'
+    summary = summary.rename(columns=new_names)
     
-    summary_table = summary_table.sort_values(by=refit_metric, ascending=False).head(5)
-    
-    print(summary_table.to_string(index=True))
+    sort_col = 'f1' if 'f1' in summary.columns else 'rmse'
+    print(summary.sort_values(by=sort_col, ascending=False).head(3).to_string(index=False))
     print("-" * 30)
-    
-    return random_search.best_estimator_
 
 # ==================== Metric Engine ====================
 def compute_metrics(y_true, y_pred, y_proba=None, task_type="classification"):
@@ -152,15 +156,19 @@ def train_model(model_obj, X_train, y_train, X_val=None, y_val=None):
     return model_obj
 
 def evaluate_model(model_obj, X_data, y_data, task_type="classification"):
-    preds = model_obj.predict(X_data)
-    
-    proba = None
-    if task_type == "classification":
-        if hasattr(model_obj, "predict_proba"):
-            proba = model_obj.predict_proba(X_data)[:, 1]
-        elif hasattr(model_obj, "decision_function"):
-            proba = model_obj.decision_function(X_data)
-            
+    if isinstance(model_obj, (BlendingEnsemble, StackingEnsemble)):
+        X_tree, X_linear = X_data
+        preds = model_obj.predict(X_tree, X_linear)
+        proba = model_obj.predict_proba(X_tree, X_linear) if task_type == "classification" else None
+    else:
+        preds = model_obj.predict(X_data)
+        proba = None
+        if task_type == "classification":
+            if hasattr(model_obj, "predict_proba"):
+                proba = model_obj.predict_proba(X_data)[:, 1]
+            elif hasattr(model_obj, "decision_function"):
+                proba = model_obj.decision_function(X_data)
+                
     return compute_metrics(y_data, preds, proba, task_type)
 
 def run_model_comparison(models_to_run, X_train, y_train, X_val, y_val, task_type="classification"):
@@ -195,7 +203,7 @@ def get_feature_importance(model, feature_names):
         return pd.DataFrame({'Feature': feature_names, 'Importance': importance}).sort_values(by='Importance', ascending=False)
     return None
 
-def save_model_artifact(model, name, folder="../outputs/models/"):
+def save_model_artifact(model, name, folder="outputs/trained_models/"):
     os.makedirs(folder, exist_ok=True)
     path = os.path.join(folder, f"{name}.joblib")
     joblib.dump(model, path)
@@ -224,72 +232,128 @@ def display_experiment_summary(all_experiments, split='val'):
     
     return df_summary
 
-if __name__ == "__main__":
-    folder_path = "outputs/artifacts"
-    file_path = os.path.join(folder_path, "processed_bundles.joblib")
-    if os.path.exists(file_path):
-        print(f"📦 Loading preprocessed data from cache: {file_path}")
-        data_bundles = joblib.load(file_path)
-    else:
-        print("🔄 No cache found. Running preprocessing pipeline...")
+# ==================== Core Workflow Functions ====================
+def execute_phase(algo_keys, X_train, y_train, X_val, y_val, phase_name, task_type="classification"):
+    print(f"\n🚀 STARTING PHASE: {phase_name}")
+    phase_results = {}
+    
+    for key in algo_keys:
+        # 1. Tuning
+        search_obj = run_tuning(key, X_train, y_train, task_type)
+        report_tuning_results(key, search_obj)
+        
+        # 2. Final Training (with Early Stopping)
+        start_time = time.time()
+        model = train_model(search_obj.best_estimator_, X_train, y_train, X_val, y_val)
+        elapsed = time.time() - start_time
+        
+        # 3. Validation Evaluation
+        phase_results[key] = {
+            "model_object": model,
+            "metrics": {"val": evaluate_model(model, X_val, y_val, task_type)},
+            "train_time": elapsed
+        }
+    return phase_results
+
+def run_final_test_comparison(all_exps, X_test_tree, X_test_linear, y_test, tree_keys):
+    print("\n🏁 FINAL TEST PERFORMANCE (ALL MODELS) ")
+    test_rows = []
+    for name, exp in all_exps.items():
+        X_test = X_test_tree if name in tree_keys else X_test_linear
+        m = evaluate_model(exp['model_object'], X_test, y_test)
+        m['Model'] = name
+        test_rows.append(m)
+    
+    summary_df = pd.DataFrame(test_rows).set_index('Model').sort_values(by='f1', ascending=False)
+    print(summary_df.round(4).to_string())
+    return summary_df
+
+# ==================== Main Entry Point ====================
+def main():
+    # 1. Data Loading
+    file_path = "outputs/artifacts/processed_bundles.joblib"
+    if not os.path.exists(file_path): 
         data_bundles = run_preprocessing_pipeline()
+    else: 
+        print(f"📦 Loading cache: {file_path}")
+        data_bundles = joblib.load(file_path)
 
-    X_train_le, X_val_le, X_test_le, y_train, y_val, y_test = data_bundles['trees_data']
-    X_train_oh, X_val_oh, X_test_oh, _, _, _ = data_bundles['linear_data']
+    X_tr_t, X_val_t, X_te_t, y_tr, y_val, y_te = data_bundles['trees_data']
+    X_tr_l, X_val_l, X_te_l, _, _, _ = data_bundles['linear_data']
 
-    tree_algo_keys = [
-        "decision_tree", "random_forest", "adaboost", 
-        "gradient_boosting", "xgboost", "lightgbm"
-    ]
-    linear_algo_keys = ["logistic_regression"]
-
+    # 2. Phases Configuration
+    tree_keys = ["decision_tree", "random_forest", "adaboost", "gradient_boosting", "xgboost", "lightgbm"]
+    linear_keys = ["logistic_regression"]
     all_experiments = {}
 
-    print("\nPHASE 1: TREE-BASED MODELS TUNING")
-    for key in tree_algo_keys:
-        best_model = tune_and_report(key, X_train_le, y_train)
-        
-        start_time = time.time()
-        trained_model = train_model(best_model, X_train_le, y_train, X_val_le, y_val)
-        train_time = time.time() - start_time
-        
-        val_metrics = evaluate_model(trained_model, X_val_le, y_val)
-        all_experiments[key] = {
-            "model_object": trained_model,
-            "metrics": {"val": val_metrics},
-            "train_time": train_time,
-            "params": trained_model.get_params()
-        }
+    # 3. Execution - Base Models
+    all_experiments.update(execute_phase(tree_keys, X_tr_t, y_tr, X_val_t, y_val, "Tree Models"))
+    all_experiments.update(execute_phase(linear_keys, X_tr_l, y_tr, X_val_l, y_val, "Linear Models"))
 
-    print("\n📈 PHASE 2: LINEAR MODELS TUNING")
-    for key in linear_algo_keys:
-        best_model = tune_and_report(key, X_train_oh, y_train)
-        
-        start_time = time.time()
-        trained_model = train_model(best_model, X_train_oh, y_train, X_val_oh, y_val)
-        train_time = time.time() - start_time
-        
-        val_metrics = evaluate_model(trained_model, X_val_oh, y_val)
-        all_experiments[key] = {
-            "model_object": trained_model,
-            "metrics": {"val": val_metrics},
-            "train_time": train_time,
-            "params": trained_model.get_params()
-        }
-
-    final_summary = display_experiment_summary(all_experiments, split='val')
-
-    best_name = final_summary['f1'].idxmax()
-    winner_obj = all_experiments[best_name]['model_object']
-    
-    print(f"\n🏆 OVERALL WINNER: {best_name}")
-    
-    final_X = X_test_le if best_name in tree_algo_keys else X_test_oh
-    test_metrics = evaluate_model(winner_obj, final_X, y_test)
-    
+    # ========================================
+    # 🚀 STARTING ENSEMBLE PHASE (Blending Only)
+    # ========================================
     print("\n" + "="*40)
-    print(f" 🏁 FINAL TEST PERFORMANCE: {best_name} ")
+    print(" 🚀 STARTING ENSEMBLE PHASE (Blending) ")
     print("="*40)
-    for m, v in test_metrics.items(): print(f"{m.upper():<10}: {v:.4f}")
 
-    save_model_artifact(winner_obj, f"best_tuned_{best_name}")
+    top_3_keys = ['xgboost', 'lightgbm', 'gradient_boosting']
+    
+    trained_top_3 = {}
+    trained_top_3 = {k: all_experiments[k]['model_object'] for k in top_3_keys if k in all_experiments}
+    
+    # Blending
+    print(f"🧬 Blending: Using Top 3 models: {list(trained_top_3.keys())}")
+    blender = BlendingEnsemble(trained_top_3, tree_keys=tree_keys)
+    start_blend = time.time()
+    blender.fit(X_val_t, X_val_l, y_val)
+    
+    all_experiments["blending_ensemble"] = {
+        "model_object": blender,
+        "metrics": {"val": evaluate_model(blender, (X_val_t, X_val_l), y_val)},
+        "train_time": time.time() - start_blend
+    }
+
+    print(f"\n🚀 Stacking: Using Top 3 models: {top_3_keys}")
+    stacking_templates = {k: clone(all_experiments[k]['model_object']) for k in top_3_keys}
+    stacker = StackingEnsemble(stacking_templates, n_splits=3, tree_keys=tree_keys)
+    start_stack = time.time()
+    stacker.fit(X_tr_t, X_tr_l, y_tr)
+    
+    all_experiments["stacking_ensemble"] = {
+        "model_object": stacker,
+        "metrics": {"val": evaluate_model(stacker, (X_val_t, X_val_l), y_val)},
+        "train_time": time.time() - start_stack
+    }
+
+    display_experiment_summary(all_experiments, split='val')
+    test_summary = run_final_ensemble_test(all_experiments, X_te_t, X_te_l, y_te, tree_keys)
+
+    best_model_name = test_summary.index[0]
+    save_model_artifact(all_experiments[best_model_name]['model_object'], f"best_model_{best_model_name}")
+    print(f"\n🏆 Overall Winner: {best_model_name}")
+
+def run_final_ensemble_test(all_exps, X_te_t, X_te_l, y_te, tree_keys):
+    print("\n🏁 FINAL TEST PERFORMANCE (INCLUDING ENSEMBLES) ")
+    test_rows = []
+    for name, exp in all_exps.items():
+        model = exp['model_object']
+        
+        if isinstance(model, (BlendingEnsemble, StackingEnsemble)):
+            y_pred = model.predict(X_te_t, X_te_l)
+            y_proba = model.predict_proba(X_te_t, X_te_l)
+        else:
+            X_test = X_te_t if name in tree_keys else X_te_l
+            y_pred = model.predict(X_test)
+            y_proba = model.predict_proba(X_test)[:, 1] if hasattr(model, "predict_proba") else None
+            
+        m = compute_metrics(y_te, y_pred, y_proba)
+        m['Model'] = name
+        test_rows.append(m)
+    
+    summary_df = pd.DataFrame(test_rows).set_index('Model').sort_values(by='f1', ascending=False)
+    print(summary_df.round(4).to_string())
+    return summary_df
+
+if __name__ == "__main__":
+    main()
