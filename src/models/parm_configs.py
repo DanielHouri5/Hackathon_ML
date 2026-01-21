@@ -49,10 +49,11 @@ PARAM_GRIDS = {
         "criterion": ["gini", "entropy"]
     },
     "random_forest": {
-        "n_estimators": [100, 200, 500],
-        "max_depth": [None, 10, 20, 30],
-        "min_samples_split": [2, 5, 10],
-        "bootstrap": [True, False]
+        "n_estimators": [100, 200], # לפי הגרף שלך, אין טעם ביותר מ-200
+        "max_depth": [10, 15, 20],   # מגביל את ה-Overfitting
+        "min_samples_leaf": [5, 10], # מונע מהמודל להיות ספציפי מדי
+        "max_features": ["sqrt"],    # גורם לעצים להיות שונים זה מזה
+        "bootstrap": [True]
     },
     "adaboost": {
         "n_estimators": [50, 100, 200],
